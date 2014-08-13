@@ -18,6 +18,7 @@ type Spider struct {
 }
 
 type ruleSet struct {
+	Id         uint64
 	Host       string
 	Rule       rule.Rule
 	RuleStr    string
@@ -37,13 +38,65 @@ func init() {
 }
 
 func (s *Spider) Router(r *mux.Router) {
-	r.HandleFunc("/allrules", s.HandleAllRules)
-	r.HandleFunc("/validate", s.HandleValidate)
+	r.HandleFunc("/rule/all", s.HandleAll)
+	r.HandleFunc("/rule/delete/{id:[0-9]+}", s.HandleDelete)
+	r.HandleFunc("/rule/update/{id:[0-9]+}", s.HandleUpdate)
+	r.Methods("POST").Path("/rule/create").HandlerFunc(s.HandleCreate)
+	r.Methods("POST").Path("/validate").HandlerFunc(s.HandleValidate)
 }
 
-func (s *Spider) HandleAllRules(w http.ResponseWriter, r *http.Request) {
+func (s *Spider) HandleAll(w http.ResponseWriter, r *http.Request) {
+	response := Response{Success: true}
+	w.Header().Add("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	if response.Response, response.Error = s.dbGetRules(); response.Error != nil {
+		response.Success = false
+	}
+	if err := enc.Encode(response); err != nil {
+		logger.Error.Printf("HandleAllRules: %s", err)
+	}
+}
+
+func (s *Spider) HandleCreate(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
 	response := Response{Success: true}
 
+	defer func() {
+		if err := enc.Encode(response); err != nil {
+			logger.Error.Printf("HandleAllRules: %s", err)
+		}
+	}()
+
+	host := r.PostFormValue("host")
+	data := r.PostFormValue("json")
+
+	newRule := new(rule.Rule)
+	if response.Error = json.Unmarshal([]byte(data), newRule); response.Error != nil {
+		response.Success = false
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if response.Error = s.dbCreate(host, newRule); response.Error != nil {
+		response.Success = false
+	}
+}
+
+func (s *Spider) HandleDelete(w http.ResponseWriter, r *http.Request) {
+	response := Response{Success: true}
+	w.Header().Add("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	if response.Response, response.Error = s.dbGetRules(); response.Error != nil {
+		response.Success = false
+	}
+	if err := enc.Encode(response); err != nil {
+		logger.Error.Printf("HandleAllRules: %s", err)
+	}
+}
+
+func (s *Spider) HandleUpdate(w http.ResponseWriter, r *http.Request) {
+	response := Response{Success: true}
 	w.Header().Add("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	if response.Response, response.Error = s.dbGetRules(); response.Error != nil {
@@ -56,7 +109,6 @@ func (s *Spider) HandleAllRules(w http.ResponseWriter, r *http.Request) {
 
 func (s *Spider) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	response := Response{}
-
 	w.Header().Add("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	if err := enc.Encode(response); err != nil {
@@ -75,7 +127,7 @@ func (s *Spider) dbGetRules() (rules []ruleSet, err error) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query("SELECT host, json, updated FROM rules ORDER BY host")
+	rows, err := db.Query(`SELECT id, host, json, updated FROM rules ORDER BY host`)
 	if err != nil {
 		return
 	}
@@ -84,7 +136,7 @@ func (s *Spider) dbGetRules() (rules []ruleSet, err error) {
 	for rows.Next() {
 		var set ruleSet
 		var data []byte
-		if err = rows.Scan(&set.Host, &data, &set.LastUpdate); err != nil {
+		if err = rows.Scan(&set.Id, &set.Host, &data, &set.LastUpdate); err != nil {
 			return
 		}
 		if err = json.Unmarshal(data, &set.Rule); err != nil {
@@ -100,4 +152,47 @@ func (s *Spider) dbGetRules() (rules []ruleSet, err error) {
 	return
 }
 
-func (s *Spider) dbAddRule() {}
+func (s *Spider) dbCreate(host string, r *rule.Rule) (err error) {
+	db, err := s.db()
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	db.Exec(`INSERT INTO rules (host, json) VALUES (?, ?)`, host, data)
+	return
+}
+
+func (s *Spider) dbDelete(host string, r *rule.Rule) (err error) {
+	db, err := s.db()
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	db.Exec(`INSERT INTO rules (host, json) VALUES (?, ?)`, host, data)
+	return
+}
+
+func (s *Spider) dbUpdate(host string, r *rule.Rule) (err error) {
+	db, err := s.db()
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		return
+	}
+	db.Exec(`INSERT INTO rules (host, json) VALUES (?, ?)`, host, data)
+	return
+}
