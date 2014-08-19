@@ -7,8 +7,10 @@ import (
 	"flag"
 	"github.com/300brand/logger"
 	"github.com/300brand/spider/rule"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/gorilla/mux"
 	"net/http"
+	"net/url"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -41,9 +43,10 @@ func (s *Spider) Router(r *mux.Router) {
 	r.HandleFunc("/rule/{id:[0-9]+}", s.HandleOne)
 	r.HandleFunc("/rule/all", s.HandleAll)
 	r.HandleFunc("/rule/delete/{id:[0-9]+}", s.HandleDelete)
-	r.Methods("POST").Path("/rule/update").HandlerFunc(s.HandleUpdate)
 	r.Methods("POST").Path("/rule/create").HandlerFunc(s.HandleCreate)
-	r.Methods("POST").Path("/validate").HandlerFunc(s.HandleValidate)
+	r.Methods("POST").Path("/rule/test").HandlerFunc(s.HandleTest)
+	r.Methods("POST").Path("/rule/update").HandlerFunc(s.HandleUpdate)
+	r.Methods("POST").Path("/rule/validate").HandlerFunc(s.HandleValidate)
 }
 
 func (s *Spider) HandleAll(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +91,8 @@ func (s *Spider) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	response := Response{Success: true}
 	w.Header().Add("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
-	if response.Response, response.Error = s.dbGetRules(); response.Error != nil {
+	id := mux.Vars(r)["id"]
+	if response.Error = s.dbDelete(id); response.Error != nil {
 		response.Success = false
 	}
 	if err := enc.Encode(response); err != nil {
@@ -108,6 +112,52 @@ func (s *Spider) HandleOne(w http.ResponseWriter, r *http.Request) {
 	if err := enc.Encode(response); err != nil {
 		logger.Error.Printf("HandleAllRules: %s", err)
 	}
+}
+
+func (s *Spider) HandleTest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	response := Response{Success: true}
+
+	defer func() {
+		if err := enc.Encode(response); err != nil {
+			logger.Error.Printf("HandleTest: %s", err)
+		}
+	}()
+
+	data := r.PostFormValue("json")
+
+	newRule := new(rule.Rule)
+	if response.Error = json.Unmarshal([]byte(data), newRule); response.Error != nil {
+		response.Success = false
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	startUrl, err := url.Parse(newRule.Start)
+	if response.Error = err; response.Error != nil {
+		response.Success = false
+		return
+	}
+
+	res, err := http.Get(newRule.Start)
+	if response.Error = err; response.Error != nil {
+		response.Success = false
+		return
+	}
+
+	doc, err := goquery.NewDocumentFromResponse(res)
+	if response.Error = err; response.Error != nil {
+		response.Success = false
+		return
+	}
+
+	response.Response, response.Error = newRule.ExtractLinks(doc, startUrl)
+	if response.Error != nil {
+		response.Success = false
+		return
+	}
+
 }
 
 func (s *Spider) HandleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +198,6 @@ func (s *Spider) HandleValidate(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	v := new(rule.Rule)
-	logger.Info.Printf("json: %+v", r.PostForm)
 	if response.Error = json.Unmarshal([]byte(r.FormValue("json")), v); response.Error != nil {
 		logger.Error.Printf("HandleValidate: %s", response.Error)
 		return
@@ -158,6 +207,17 @@ func (s *Spider) HandleValidate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Spider) db() (db *sql.DB, err error) {
 	return sql.Open("mysql", *SpiderConf.DSN+"?parseTime=true")
+}
+
+func (s *Spider) dbDelete(id string) (err error) {
+	db, err := s.db()
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`DELETE FROM rules WHERE id = ? LIMIT 1`, id)
+	return
 }
 
 func (s *Spider) dbGetRule(id string) (set ruleSet, err error) {
@@ -217,21 +277,6 @@ func (s *Spider) dbGetRules() (rules []ruleSet, err error) {
 }
 
 func (s *Spider) dbCreate(host string, r *rule.Rule) (err error) {
-	db, err := s.db()
-	if err != nil {
-		return
-	}
-	defer db.Close()
-
-	data, err := json.Marshal(r)
-	if err != nil {
-		return
-	}
-	db.Exec(`INSERT INTO rules (host, json) VALUES (?, ?)`, host, data)
-	return
-}
-
-func (s *Spider) dbDelete(host string, r *rule.Rule) (err error) {
 	db, err := s.db()
 	if err != nil {
 		return
